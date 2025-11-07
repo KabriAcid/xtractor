@@ -1,10 +1,8 @@
 # PDF Processing
-PyMUPDF==1.23.8
 pdfplumber==0.10.3
 
 # Database & Data Storage
 sqlalchemy==2.0.23
-sqlite3-python==1.0.0
 
 # Data Processing
 pandas==2.1.3
