@@ -5,3 +5,5 @@ logs
 static/uploads
 tests
 .env
+extracted_data
+.venv

@@ -31,7 +31,7 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 /**
- * Handle PDF file upload and extraction
+ * Handle PDF file upload and extraction with real-time progress
  */
 async function handleUpload(e) {
   e.preventDefault();
@@ -53,7 +53,6 @@ async function handleUpload(e) {
     return;
   }
 
-  // Create FormData
   const formData = new FormData();
   formData.append("file", file);
 
@@ -61,29 +60,37 @@ async function handleUpload(e) {
     showProgress(true);
     submitBtn.disabled = true;
 
-    // Simulate progress
+    // Start realistic progress
     let progress = 0;
     const progressInterval = setInterval(() => {
-      if (progress < 90) {
-        progress += Math.random() * 30;
-        updateProgress(Math.min(progress, 90));
+      if (progress < 85) {
+        // Slower progress initially, faster near end
+        const increment = Math.random() * (85 - progress) * 0.05;
+        progress += increment;
+        updateProgress(Math.min(progress, 85));
       }
-    }, 500);
+    }, 300);
 
-    // Upload file
     const response = await fetch(`${API_BASE}/upload`, {
       method: "POST",
       body: formData,
     });
 
     clearInterval(progressInterval);
-    updateProgress(100);
+    updateProgress(95); // Almost done
 
     const data = await response.json();
+
+    // Simulate final processing
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    updateProgress(100);
 
     if (response.ok && data.status === "success") {
       showSuccess(data.data);
       uploadForm.reset();
+
+      // Refresh data with slight delay
+      await new Promise((resolve) => setTimeout(resolve, 500));
       refreshStats();
       loadRecentLogs();
     } else {
@@ -111,20 +118,20 @@ function showSuccess(data) {
   details.innerHTML = "";
 
   if (data.filename) {
-    details.appendChild(createDetailItem("File", data.filename));
+    details.appendChild(createDetailItem("📄 File", data.filename));
   }
 
   if (data.stats) {
-    details.appendChild(createDetailItem("States", data.stats.total_states));
-    details.appendChild(createDetailItem("LGAs", data.stats.total_lgas));
-    details.appendChild(createDetailItem("Wards", data.stats.total_wards));
+    details.appendChild(createDetailItem("🏛️ States", data.stats.total_states));
+    details.appendChild(createDetailItem("📍 LGAs", data.stats.total_lgas));
+    details.appendChild(createDetailItem("🗳️ Wards", data.stats.total_wards));
   }
 
   if (data.json_file) {
     const link = document.createElement("a");
     link.href = "#";
     link.className = "text-green-600 hover:text-green-800 underline";
-    link.textContent = "Download JSON";
+    link.textContent = "📥 Download JSON";
     link.onclick = (e) => {
       e.preventDefault();
       showInfo(`JSON file saved to: ${data.json_file}`);
