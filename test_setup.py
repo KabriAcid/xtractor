@@ -20,14 +20,11 @@ def test_imports():
     """Test if all modules can be imported"""
     logger.info("Testing imports...")
     try:
-        from app.models import State, LGA, Ward, ExtractionLog, Base, engine
+        from app.models import DatabaseManager, init_db, get_db
         logger.info("✓ Models imported successfully")
         
         from app.parser import PDFExtractor
         logger.info("✓ Parser imported successfully")
-        
-        from app.database import DatabaseManager
-        logger.info("✓ Database manager imported successfully")
         
         from app.extraction_service import ExtractionService
         logger.info("✓ Extraction service imported successfully")
@@ -48,16 +45,22 @@ def test_database():
     """Test database initialization"""
     logger.info("Testing database...")
     try:
-        from app.models import Base, engine, SessionLocal, State, LGA, Ward
+        from app.models import init_db, get_db, DatabaseManager
         
-        # Create tables
-        Base.metadata.create_all(bind=engine)
-        logger.info("✓ Database tables created successfully")
+        # Initialize database
+        init_db()
+        logger.info("✓ Database initialized successfully")
         
-        # Test session
-        db = SessionLocal()
-        db.close()
-        logger.info("✓ Database session works")
+        # Test connection
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = cursor.fetchall()
+            logger.info(f"✓ Database has {len(tables)} tables")
+        
+        # Test get stats
+        stats = DatabaseManager.get_database_stats()
+        logger.info(f"✓ Database stats retrieved: {stats}")
         
         return True
     except Exception as e:
