@@ -1,1 +1,6 @@
-console.log("This is the main JavaScript file for the application.");
+const handleSubmit = (formData) => {
+  e.preventDefault();
+  alert("Submitted");
+};
+document.addEventListener("submit", handleSubmit);
+
