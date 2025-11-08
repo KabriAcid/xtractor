@@ -82,8 +82,10 @@ def init_db():
 @contextmanager
 def get_db():
     """Context manager for database connections"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row  # Return rows as dictionaries
+    conn.execute('PRAGMA journal_mode=WAL')  # Write-ahead logging for better concurrency
+    conn.execute('PRAGMA busy_timeout=5000')  # 5 second timeout
     try:
         yield conn
     finally:
@@ -95,16 +97,18 @@ class DatabaseManager:
     
     @staticmethod
     def save_extraction_data(extracted_data, filename):
-        """Save extracted data to database"""
+        """Save extracted data to database from hierarchical structure"""
         with get_db() as conn:
+            conn.isolation_level = None  # Autocommit mode
+            conn.execute('PRAGMA journal_mode=WAL')  # Use WAL mode for better concurrency
+            conn.execute('PRAGMA busy_timeout=5000')  # 5 second timeout
+            
             cursor = conn.cursor()
+            lgas_created = 0
+            wards_created = 0
+            log_id = None
             
             try:
-                # Track counts
-                lgas_created = 0
-                wards_created = 0
-                log_id = None
-                
                 # Create extraction log
                 cursor.execute('''
                     INSERT INTO extraction_logs 
@@ -113,67 +117,66 @@ class DatabaseManager:
                 ''', (filename, 'in_progress'))
                 log_id = cursor.lastrowid
                 
-                # Process states
-                state_map = {}
+                # Process hierarchical data structure
                 for state_data in extracted_data.get('states', []):
-                    try:
+                    state_name = state_data.get('name', '').strip()
+                    if not state_name:
+                        continue
+                    
+                    # Insert state
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO states 
+                        (state_name, state_code) 
+                        VALUES (?, ?)
+                    ''', (state_name, ''))
+                    
+                    cursor.execute(
+                        'SELECT id FROM states WHERE state_name = ?',
+                        (state_name,)
+                    )
+                    state_id_row = cursor.fetchone()
+                    if not state_id_row:
+                        continue
+                    state_id = state_id_row[0]
+                    
+                    # Process LGAs in this state
+                    for lga_data in state_data.get('lgas', []):
+                        lga_name = lga_data.get('name', '').strip()
+                        lga_code = lga_data.get('code', '').strip()
+                        if not lga_name:
+                            continue
+                        
+                        # Insert LGA
                         cursor.execute('''
-                            INSERT OR IGNORE INTO states 
-                            (state_name, state_code) 
-                            VALUES (?, ?)
-                        ''', (state_data['name'], state_data.get('code', '')))
+                            INSERT OR IGNORE INTO lgas 
+                            (lga_name, lga_code, state_id) 
+                            VALUES (?, ?, ?)
+                        ''', (lga_name, lga_code, state_id))
                         
                         cursor.execute(
-                            'SELECT id FROM states WHERE state_name = ?',
-                            (state_data['name'],)
+                            'SELECT id FROM lgas WHERE lga_name = ? AND state_id = ?',
+                            (lga_name, state_id)
                         )
-                        state_id = cursor.fetchone()[0]
-                        state_map[state_data['name']] = state_id
-                    except Exception as e:
-                        print(f"Error saving state {state_data['name']}: {e}")
-                
-                # Process LGAs
-                lga_map = {}
-                for lga_data in extracted_data.get('lgas', []):
-                    state_name = lga_data.get('state')
-                    if state_name and state_name in state_map:
-                        try:
-                            state_id = state_map[state_name]
-                            cursor.execute('''
-                                INSERT OR IGNORE INTO lgas 
-                                (lga_name, lga_code, state_id) 
-                                VALUES (?, ?, ?)
-                            ''', (lga_data['name'], lga_data.get('code', ''), state_id))
+                        lga_id_row = cursor.fetchone()
+                        if not lga_id_row:
+                            continue
+                        lga_id = lga_id_row[0]
+                        lgas_created += 1
+                        
+                        # Process wards in this LGA
+                        for ward_data in lga_data.get('wards', []):
+                            ward_name = ward_data.get('name', '').strip()
+                            ward_code = ward_data.get('code', '').strip()
+                            if not ward_name:
+                                continue
                             
-                            cursor.execute(
-                                'SELECT id FROM lgas WHERE lga_name = ? AND state_id = ?',
-                                (lga_data['name'], state_id)
-                            )
-                            result = cursor.fetchone()
-                            if result:
-                                lga_id = result[0]
-                                lga_map[f"{state_name}_{lga_data['name']}"] = lga_id
-                                lgas_created += 1
-                        except Exception as e:
-                            print(f"Error saving LGA {lga_data['name']}: {e}")
-                
-                # Process Wards
-                for ward_data in extracted_data.get('wards', []):
-                    state_name = ward_data.get('state')
-                    lga_name = ward_data.get('lga')
-                    key = f"{state_name}_{lga_name}"
-                    
-                    if key in lga_map:
-                        try:
-                            lga_id = lga_map[key]
+                            # Insert ward
                             cursor.execute('''
                                 INSERT OR IGNORE INTO wards 
                                 (ward_name, ward_code, lga_id) 
                                 VALUES (?, ?, ?)
-                            ''', (ward_data['name'], ward_data.get('code', ''), lga_id))
+                            ''', (ward_name, ward_code, lga_id))
                             wards_created += 1
-                        except Exception as e:
-                            print(f"Error saving ward {ward_data['name']}: {e}")
                 
                 # Update extraction log with success
                 cursor.execute('''
@@ -196,12 +199,15 @@ class DatabaseManager:
                 
             except Exception as e:
                 # Update log with error
-                cursor.execute('''
-                    UPDATE extraction_logs 
-                    SET status = ?, error_message = ?, completed_at = ?
-                    WHERE id = ?
-                ''', ('failed', str(e), datetime.utcnow().isoformat(), log_id))
-                conn.commit()
+                try:
+                    cursor.execute('''
+                        UPDATE extraction_logs 
+                        SET status = ?, error_message = ?, completed_at = ?
+                        WHERE id = ?
+                    ''', ('failed', str(e), datetime.utcnow().isoformat(), log_id))
+                    conn.commit()
+                except:
+                    pass
                 raise
     
     @staticmethod
