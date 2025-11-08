@@ -8,8 +8,7 @@ import json
 from pathlib import Path
 
 from app.parser import PDFExtractor
-from app.database import DatabaseManager
-from sqlalchemy.orm import Session
+from app.models import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +31,13 @@ class ExtractionService:
         os.makedirs(upload_dir, exist_ok=True)
         os.makedirs(output_dir, exist_ok=True)
     
-    def extract_and_save(self, pdf_path: str, db: Session, save_to_db: bool = True, 
+    def extract_and_save(self, pdf_path: str, save_to_db: bool = True, 
                         save_to_json: bool = False) -> Tuple[Dict, str]:
         """
         Extract data from PDF and optionally save to database
         
         Args:
             pdf_path: Path to the PDF file
-            db: Database session
             save_to_db: Whether to save to database
             save_to_json: Whether to save to JSON file
             
@@ -66,17 +64,18 @@ class ExtractionService:
                 logger.info(f"Data exported to JSON: {json_path}")
             
             # Save to database if requested
-            log = None
+            log_id = None
             if save_to_db:
-                log = DatabaseManager.save_extraction_data(db, extracted_data, filename)
-                logger.info(f"Data saved to database. Log ID: {log.id}")
+                result = DatabaseManager.save_extraction_data(extracted_data, filename)
+                log_id = result['log_id']
+                logger.info(f"Data saved to database. Log ID: {log_id}")
             
             result = {
                 "success": True,
                 "filename": filename,
                 "stats": stats,
                 "json_file": json_path,
-                "database_log_id": log.id if log else None,
+                "database_log_id": log_id,
                 "extracted_data": extracted_data
             }
             
@@ -91,13 +90,12 @@ class ExtractionService:
             logger.error(error_msg)
             return {"success": False, "error": error_msg}, error_msg
     
-    def process_uploaded_file(self, file_path: str, db: Session) -> Dict:
+    def process_uploaded_file(self, file_path: str) -> Dict:
         """
         Process an uploaded PDF file
         
         Args:
             file_path: Path to the uploaded file
-            db: Database session
             
         Returns:
             Dictionary with processing results
@@ -105,7 +103,6 @@ class ExtractionService:
         try:
             result, message = self.extract_and_save(
                 file_path,
-                db,
                 save_to_db=True,
                 save_to_json=True
             )
@@ -132,22 +129,22 @@ class ExtractionService:
                 "data": None
             }
     
-    def get_extraction_status(self, db: Session) -> Dict:
+    def get_extraction_status(self) -> Dict:
         """Get extraction statistics and recent logs"""
         try:
-            stats = DatabaseManager.get_database_stats(db)
-            logs = DatabaseManager.get_extraction_logs(db, limit=10)
+            stats = DatabaseManager.get_database_stats()
+            logs = DatabaseManager.get_extraction_logs(limit=10)
             
             logs_data = [
                 {
-                    "id": log.id,
-                    "filename": log.filename,
-                    "status": log.status,
-                    "lgas_extracted": log.total_lgas_extracted,
-                    "wards_extracted": log.total_wards_extracted,
-                    "created_at": log.created_at.isoformat() if log.created_at else None,
-                    "completed_at": log.completed_at.isoformat() if log.completed_at else None,
-                    "error": log.error_message
+                    "id": log['id'],
+                    "filename": log['filename'],
+                    "status": log['status'],
+                    "lgas_extracted": log['total_lgas_extracted'],
+                    "wards_extracted": log['total_wards_extracted'],
+                    "created_at": log['created_at'],
+                    "completed_at": log['completed_at'],
+                    "error": log['error_message']
                 }
                 for log in logs
             ]

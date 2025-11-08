@@ -13,8 +13,8 @@ def create_app(config_name='development'):
     logging.basicConfig(level=logging.INFO)
     
     # Initialize database
-    from app.models import Base, engine
-    Base.metadata.create_all(bind=engine)
+    from app.models import init_db
+    init_db()
     
     # Register blueprints
     from app.routes import bp
