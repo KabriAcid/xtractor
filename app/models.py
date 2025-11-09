@@ -9,34 +9,48 @@ from contextlib import contextmanager
 DB_PATH = "data/xtractor.db"
 os.makedirs("data", exist_ok=True)
 
+# All 37 Nigerian states (36 states + FCT Abuja)
+NIGERIAN_STATES = [
+    "ABIA", "ADAMAWA", "AKWA IBOM", "ANAMBRA", "BAUCHI", "BAYELSA",
+    "BENUE", "BORNO", "CROSS RIVER", "DELTA", "EBONYI", "EDO",
+    "EKITI", "ENUGU", "GOMBE", "IMO", "JIGAWA", "KADUNA",
+    "KANO", "KATSINA", "KEBBI", "KOGI", "KWARA", "LAGOS",
+    "NASARAWA", "NIGER", "OGUN", "ONDO", "OSUN", "OYO",
+    "PLATEAU", "RIVERS", "SOKOTO", "TARABA", "YOBE", "ZAMFARA",
+    "FCT"  # Federal Capital Territory (Abuja)
+]
+
 
 def init_db():
     """Initialize database with schema"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # States table
+    # States table (pre-populated)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS states (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            state_name TEXT NOT NULL UNIQUE,
-            state_code TEXT NOT NULL UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            name TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # Populate states if empty
+    cursor.execute('SELECT COUNT(*) FROM states')
+    if cursor.fetchone()[0] == 0:
+        for state_name in NIGERIAN_STATES:
+            cursor.execute('INSERT INTO states (name) VALUES (?)', (state_name,))
     
     # LGAs table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS lgas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lga_name TEXT NOT NULL,
-            lga_code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            code TEXT NOT NULL,
             state_id INTEGER NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (state_id) REFERENCES states(id),
-            UNIQUE(lga_name, state_id)
+            UNIQUE(code, state_id)
         )
     ''')
     
@@ -44,13 +58,12 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS wards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ward_name TEXT NOT NULL,
-            ward_code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            code TEXT NOT NULL,
             lga_id INTEGER NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (lga_id) REFERENCES lgas(id),
-            UNIQUE(ward_name, lga_id)
+            UNIQUE(code, lga_id)
         )
     ''')
     
@@ -69,10 +82,10 @@ def init_db():
     ''')
     
     # Create indexes
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_state_name ON states(state_name)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_lga_name ON lgas(lga_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_state_name ON states(name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_lga_code ON lgas(code, state_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_lga_state ON lgas(state_id)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_ward_name ON wards(ward_name)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_ward_code ON wards(code, lga_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_ward_lga ON wards(lga_id)')
     
     conn.commit()
@@ -97,11 +110,11 @@ class DatabaseManager:
     
     @staticmethod
     def save_extraction_data(extracted_data, filename):
-        """Save extracted data to database from hierarchical structure"""
+        """Save extracted data to database - states are pre-populated"""
         with get_db() as conn:
             conn.isolation_level = None  # Autocommit mode
-            conn.execute('PRAGMA journal_mode=WAL')  # Use WAL mode for better concurrency
-            conn.execute('PRAGMA busy_timeout=5000')  # 5 second timeout
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA busy_timeout=5000')
             
             cursor = conn.cursor()
             lgas_created = 0
@@ -118,20 +131,15 @@ class DatabaseManager:
                 log_id = cursor.lastrowid
                 
                 # Process hierarchical data structure
+                # States are already in DB, just match by name
                 for state_data in extracted_data.get('states', []):
-                    state_name = state_data.get('name', '').strip()
+                    state_name = state_data.get('name', '').strip().upper()
                     if not state_name:
                         continue
                     
-                    # Insert state
-                    cursor.execute('''
-                        INSERT OR IGNORE INTO states 
-                        (state_name, state_code) 
-                        VALUES (?, ?)
-                    ''', (state_name, ''))
-                    
+                    # Get state ID from pre-populated states
                     cursor.execute(
-                        'SELECT id FROM states WHERE state_name = ?',
+                        'SELECT id FROM states WHERE UPPER(name) = ?',
                         (state_name,)
                     )
                     state_id_row = cursor.fetchone()
@@ -143,19 +151,19 @@ class DatabaseManager:
                     for lga_data in state_data.get('lgas', []):
                         lga_name = lga_data.get('name', '').strip()
                         lga_code = lga_data.get('code', '').strip()
-                        if not lga_name:
+                        if not lga_name or not lga_code:
                             continue
                         
-                        # Insert LGA
+                        # Insert LGA (unique on code + state_id)
                         cursor.execute('''
                             INSERT OR IGNORE INTO lgas 
-                            (lga_name, lga_code, state_id) 
+                            (name, code, state_id) 
                             VALUES (?, ?, ?)
                         ''', (lga_name, lga_code, state_id))
                         
                         cursor.execute(
-                            'SELECT id FROM lgas WHERE lga_name = ? AND state_id = ?',
-                            (lga_name, state_id)
+                            'SELECT id FROM lgas WHERE code = ? AND state_id = ?',
+                            (lga_code, state_id)
                         )
                         lga_id_row = cursor.fetchone()
                         if not lga_id_row:
@@ -167,13 +175,13 @@ class DatabaseManager:
                         for ward_data in lga_data.get('wards', []):
                             ward_name = ward_data.get('name', '').strip()
                             ward_code = ward_data.get('code', '').strip()
-                            if not ward_name:
+                            if not ward_name or not ward_code:
                                 continue
                             
-                            # Insert ward
+                            # Insert ward (unique on code + lga_id)
                             cursor.execute('''
                                 INSERT OR IGNORE INTO wards 
-                                (ward_name, ward_code, lga_id) 
+                                (name, code, lga_id) 
                                 VALUES (?, ?, ?)
                             ''', (ward_name, ward_code, lga_id))
                             wards_created += 1
@@ -216,10 +224,10 @@ class DatabaseManager:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, state_name, state_code, 
+                SELECT id, name, 
                        (SELECT COUNT(*) FROM lgas WHERE state_id = states.id) as lga_count
                 FROM states
-                ORDER BY state_name
+                ORDER BY name
             ''')
             return [dict(row) for row in cursor.fetchall()]
     
@@ -229,11 +237,11 @@ class DatabaseManager:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, lga_name, lga_code,
+                SELECT id, name, code,
                        (SELECT COUNT(*) FROM wards WHERE lga_id = lgas.id) as ward_count
                 FROM lgas
                 WHERE state_id = ?
-                ORDER BY lga_name
+                ORDER BY code
             ''', (state_id,))
             return [dict(row) for row in cursor.fetchall()]
     
@@ -243,10 +251,10 @@ class DatabaseManager:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT id, ward_name, ward_code
+                SELECT id, name, code
                 FROM wards
                 WHERE lga_id = ?
-                ORDER BY ward_name
+                ORDER BY code
             ''', (lga_id,))
             return [dict(row) for row in cursor.fetchall()]
     
@@ -300,29 +308,29 @@ class DatabaseManager:
             
             if search_type in ['all', 'state']:
                 cursor.execute('''
-                    SELECT id, state_name as name, state_code as code
+                    SELECT id, name
                     FROM states
-                    WHERE state_name LIKE ?
+                    WHERE name LIKE ?
                     LIMIT 20
                 ''', (query,))
                 results['states'] = [dict(row) for row in cursor.fetchall()]
             
             if search_type in ['all', 'lga']:
                 cursor.execute('''
-                    SELECT l.id, l.lga_name as name, l.lga_code as code, s.state_name as state
+                    SELECT l.id, l.name, l.code, s.name as state
                     FROM lgas l
                     JOIN states s ON l.state_id = s.id
-                    WHERE l.lga_name LIKE ?
+                    WHERE l.name LIKE ?
                     LIMIT 20
                 ''', (query,))
                 results['lgas'] = [dict(row) for row in cursor.fetchall()]
             
             if search_type in ['all', 'ward']:
                 cursor.execute('''
-                    SELECT w.id, w.ward_name as name, w.ward_code as code, l.lga_name as lga
+                    SELECT w.id, w.name, w.code, l.name as lga
                     FROM wards w
                     JOIN lgas l ON w.lga_id = l.id
-                    WHERE w.ward_name LIKE ?
+                    WHERE w.name LIKE ?
                     LIMIT 20
                 ''', (query,))
                 results['wards'] = [dict(row) for row in cursor.fetchall()]
@@ -340,39 +348,38 @@ class DatabaseManager:
                 'states': []
             }
             
-            cursor.execute('SELECT id, state_name, state_code FROM states ORDER BY state_name')
+            cursor.execute('SELECT id, name FROM states ORDER BY name')
             states = [dict(row) for row in cursor.fetchall()]
             
             for state in states:
                 state_data = {
-                    'name': state['state_name'],
-                    'code': state['state_code'],
+                    'name': state['name'],
                     'lgas': []
                 }
                 
                 cursor.execute('''
-                    SELECT id, lga_name, lga_code FROM lgas 
-                    WHERE state_id = ? ORDER BY lga_name
+                    SELECT id, name, code FROM lgas 
+                    WHERE state_id = ? ORDER BY code
                 ''', (state['id'],))
                 lgas = [dict(row) for row in cursor.fetchall()]
                 
                 for lga in lgas:
                     lga_data = {
-                        'name': lga['lga_name'],
-                        'code': lga['lga_code'],
+                        'name': lga['name'],
+                        'code': lga['code'],
                         'wards': []
                     }
                     
                     cursor.execute('''
-                        SELECT ward_name, ward_code FROM wards 
-                        WHERE lga_id = ? ORDER BY ward_name
+                        SELECT name, code FROM wards 
+                        WHERE lga_id = ? ORDER BY code
                     ''', (lga['id'],))
                     wards = [dict(row) for row in cursor.fetchall()]
                     
                     for ward in wards:
                         lga_data['wards'].append({
-                            'name': ward['ward_name'],
-                            'code': ward['ward_code']
+                            'name': ward['name'],
+                            'code': ward['code']
                         })
                     
                     state_data['lgas'].append(lga_data)
