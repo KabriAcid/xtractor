@@ -1,11 +1,10 @@
 """Service for handling PDF extraction operations"""
 
-import os
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Tuple, BinaryIO
 from datetime import datetime
-import json
-from pathlib import Path
+import tempfile
+import os
 
 from app.parser import PDFExtractor
 from app.models import DatabaseManager
@@ -16,40 +15,43 @@ logger = logging.getLogger(__name__)
 class ExtractionService:
     """Handle PDF extraction and data storage operations"""
     
-    def __init__(self, upload_dir: str = "uploads", output_dir: str = "extracted_data"):
+    def __init__(self, output_dir: str = "extracted_data"):
         """
         Initialize extraction service
         
         Args:
-            upload_dir: Directory where uploaded PDFs are stored
             output_dir: Directory where extracted JSON files are stored
         """
-        self.upload_dir = upload_dir
         self.output_dir = output_dir
         
-        # Create directories if they don't exist
-        os.makedirs(upload_dir, exist_ok=True)
+        # Create directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
     
-    def extract_and_save(self, pdf_path: str, save_to_db: bool = True, 
+    def extract_and_save(self, file_obj: BinaryIO, filename: str, save_to_db: bool = True, 
                         save_to_json: bool = False) -> Tuple[Dict, str]:
         """
-        Extract data from PDF and optionally save to database
+        Extract data from PDF file object and optionally save to database
         
         Args:
-            pdf_path: Path to the PDF file
+            file_obj: File-like object containing PDF data
+            filename: Original filename for logging
             save_to_db: Whether to save to database
             save_to_json: Whether to save to JSON file
             
         Returns:
             Tuple of (extracted_data, status_message)
         """
+        temp_path = None
         try:
-            filename = os.path.basename(pdf_path)
             logger.info(f"Starting extraction from {filename}")
             
+            # Create a temporary file to pass to PDFExtractor
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+                temp_path = temp_file.name
+                temp_file.write(file_obj.read())
+            
             # Extract data from PDF
-            extractor = PDFExtractor(pdf_path)
+            extractor = PDFExtractor(temp_path)
             extracted_data = extractor.extract_all()
             stats = extractor.get_statistics()
             
@@ -58,7 +60,9 @@ class ExtractionService:
             # Save to JSON if requested
             json_path = None
             if save_to_json:
-                json_filename = f"{Path(filename).stem}_extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                # Remove timestamp prefix if present
+                clean_filename = filename.split('_', 1)[-1] if '_' in filename else filename
+                json_filename = f"{clean_filename.rsplit('.', 1)[0]}_extracted_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
                 json_path = os.path.join(self.output_dir, json_filename)
                 extractor.export_to_json(json_path)
                 logger.info(f"Data exported to JSON: {json_path}")
@@ -82,27 +86,36 @@ class ExtractionService:
             return result, "Extraction completed successfully"
             
         except FileNotFoundError:
-            error_msg = f"PDF file not found: {pdf_path}"
+            error_msg = f"PDF file error: {filename}"
             logger.error(error_msg)
             return {"success": False, "error": error_msg}, error_msg
         except Exception as e:
             error_msg = f"Error during extraction: {str(e)}"
             logger.error(error_msg)
             return {"success": False, "error": error_msg}, error_msg
+        finally:
+            # Clean up temporary file
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception as e:
+                    logger.warning(f"Could not delete temp file {temp_path}: {e}")
     
-    def process_uploaded_file(self, file_path: str) -> Dict:
+    def process_uploaded_file(self, file_obj: BinaryIO, filename: str) -> Dict:
         """
-        Process an uploaded PDF file
+        Process an uploaded PDF file (in-memory, no file saved)
         
         Args:
-            file_path: Path to the uploaded file
+            file_obj: File-like object containing PDF data
+            filename: Original filename
             
         Returns:
             Dictionary with processing results
         """
         try:
             result, message = self.extract_and_save(
-                file_path,
+                file_obj,
+                filename,
                 save_to_db=True,
                 save_to_json=True
             )

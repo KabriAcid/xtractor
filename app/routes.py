@@ -1,7 +1,6 @@
 from flask import Blueprint, render_template, request, jsonify
-from werkzeug.utils import secure_filename
-import os
 import logging
+import io
 from datetime import datetime
 
 from app.models import DatabaseManager
@@ -14,11 +13,8 @@ logger = logging.getLogger(__name__)
 bp = Blueprint('main', __name__)
 
 # Configuration
-UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf'}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Initialize extraction service
 extraction_service = ExtractionService()
@@ -38,7 +34,7 @@ def index():
 @bp.route('/api/upload', methods=['POST'])
 def upload_pdf():
     """
-    Upload and extract from PDF
+    Upload and extract from PDF (processes in-memory, no file saved)
     
     Returns:
         JSON with extraction results
@@ -57,25 +53,18 @@ def upload_pdf():
             return jsonify({"error": "Only PDF files are allowed"}), 400
         
         # Check file size
-        file.seek(0, os.SEEK_END)
+        file.seek(0, 2)  # Seek to end
         file_size = file.tell()
-        file.seek(0)
+        file.seek(0)  # Seek to beginning
         
         if file_size > MAX_FILE_SIZE:
             return jsonify({"error": f"File too large. Maximum size: {MAX_FILE_SIZE / 1024 / 1024}MB"}), 400
         
-        # Save uploaded file
-        filename = secure_filename(file.filename)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_")
-        filename = timestamp + filename
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(filepath)
+        logger.info(f"Processing file: {file.filename}")
         
-        logger.info(f"File uploaded: {filename}")
-        
-        # Process file
+        # Process file from memory (BytesIO object)
         try:
-            result = extraction_service.process_uploaded_file(filepath)
+            result = extraction_service.process_uploaded_file(file, file.filename)
             
             # Remove extracted data from response (can be large)
             if 'data' in result and result['data']:
@@ -83,8 +72,13 @@ def upload_pdf():
                 if 'extracted_data' in data:
                     data['extracted_data'] = {
                         'states': len(data['extracted_data'].get('states', [])),
-                        'lgas': len(data['extracted_data'].get('lgas', [])),
-                        'wards': len(data['extracted_data'].get('wards', []))
+                        'total_lgas': sum(len(s.get('lgas', [])) for s in data['extracted_data'].get('states', [])),
+                        'total_wards': sum(
+                            len(w) 
+                            for s in data['extracted_data'].get('states', []) 
+                            for l in s.get('lgas', []) 
+                            for w in l.get('wards', [])
+                        )
                     }
                 result['data'] = data
             

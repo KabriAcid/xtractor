@@ -101,13 +101,11 @@ def test_extraction_service():
         from app.extraction_service import ExtractionService
         
         service = ExtractionService(
-            upload_dir='uploads',
             output_dir='extracted_data'
         )
         logger.info("✓ Extraction service initialized successfully")
         
         # Check directories exist
-        assert os.path.exists('uploads'), "uploads directory not created"
         assert os.path.exists('extracted_data'), "extracted_data directory not created"
         logger.info("✓ Required directories exist")
         
