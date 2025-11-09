@@ -1,9 +1,16 @@
 # Ignore Python bytecode files
 __pycache__/
 *.py[cod]
-logs
-static/uploads
-tests
+
+# Directories to ignore
+logs/
+uploads/
+extracted_data/
+tests/
+.venv/
+
+# Configuration
 .env
-extracted_data
-.venv
+
+# Environment
+static/uploads
